@@ -50,12 +50,13 @@ class Receiver
     bool init( void );
 
     private :
+    // sockaddr_in6 because ipv6 also allows ipv4 (ipv4 mapped addresses)
 #if defined (WIN32) && !defined(__CYGWIN__)
         SOCKET _so;
-        SOCKADDR_IN saddr;
+        SOCKADDR_IN6 saddr;
 #else
         int _so;
-        struct sockaddr_in saddr;
+        struct sockaddr_in6 saddr;
 #endif
     bool _initialized;
     short _port;
@@ -103,11 +104,12 @@ class Broadcaster
         void *_buffer;
         unsigned int _buffer_size;
 #if defined(WIN32) && !defined(__CYGWIN__)
-        SOCKADDR_IN saddr;
+        SOCKADDR_STORAGE saddr;
+        ADDRINFO* _address;
 #else
-        struct sockaddr_in saddr;
+        struct sockaddr_storage saddr;
+        struct addrinfo* _address;
 #endif
-        unsigned long _address;
 };
 
 class CameraPacket {

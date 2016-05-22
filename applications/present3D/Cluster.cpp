@@ -279,14 +279,15 @@ bool Receiver::init( void )
 
     if( _port == 0 )
     {
-    fprintf( stderr, "Receiver::init() - port not defined\n" );
-    return false;
+        fprintf( stderr, "Receiver::init() - port not defined\n" );
+        return false;
     }
 
-    if( (_so = socket( AF_INET, SOCK_DGRAM, 0 )) < 0 )
+    /* IPv6 will also allow IPv4 with IPv4Mapped */
+    if( (_so = socket( AF_INET6, SOCK_DGRAM, 0 )) < 0 )
     {
         perror( "Socket" );
-    return false;
+        return false;
     }
 #if defined (WIN32) && !defined(__CYGWIN__)
 //    const BOOL on = TRUE;
@@ -296,14 +297,9 @@ bool Receiver::init( void )
     setsockopt( _so, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 #endif
 
-//    struct sockaddr_in saddr;
-    saddr.sin_family = AF_INET;
-    saddr.sin_port   = htons( _port );
-#if defined (WIN32) && !defined(__CYGWIN__)
-    saddr.sin_addr.s_addr =  htonl(INADDR_ANY);
-#else
-    saddr.sin_addr.s_addr =  0;
-#endif
+    saddr.sin6_family = AF_INET6;
+    saddr.sin6_port   = htons( _port );
+    saddr.sin6_addr   = in6addr_any;
 
     if( bind( _so, (struct sockaddr *)&saddr, sizeof( saddr )) < 0 )
     {
@@ -343,7 +339,7 @@ void Receiver::sync( void )
 #else
     int
 #endif
-        size = sizeof( struct sockaddr_in );
+        size = sizeof( saddr );
 
     fd_set fdset;
     FD_ZERO( &fdset );
@@ -354,12 +350,7 @@ void Receiver::sync( void )
     tv.tv_usec = 0;
 
 #if defined (WIN32) && !defined(__CYGWIN__)
-//    saddr.sin_port   = htons( _port );
     recvfrom( _so, (char *)_buffer, _buffer_size, 0, (sockaddr*)&saddr, &size );
-//    recvfrom(sock_Receive, szMessage, 256, 0, (sockaddr*)&addr_Cli, &clilen)
-    //int err = WSAGetLastError ();
-    //int *dum = (int*) _buffer;
-
     while( select( _so+1, &fdset, 0L, 0L, &tv ) )
     {
         if( FD_ISSET( _so, &fdset ) )
@@ -389,7 +380,7 @@ Broadcaster::Broadcaster( void )
     _port = 0;
     _initialized = false;
     _buffer = 0L;
-    _address = 0;
+    _address = NULL;
 }
 
 Broadcaster::~Broadcaster( void )
@@ -399,6 +390,7 @@ Broadcaster::~Broadcaster( void )
 #else
     close( _so );
 #endif
+    freeaddrinfo( _address );
 }
 
 bool Broadcaster::init( void )
@@ -416,30 +408,37 @@ bool Broadcaster::init( void )
         return false;
     }
 
-    if( (_so = socket( AF_INET, SOCK_DGRAM, 0 )) < 0 )
+    struct addrinfo* rp = NULL;
+    if( _address != NULL)
     {
-        perror( "Socket" );
-        return false;
+        for( rp = _address; rp != NULL; rp = rp->ai_next )
+        {
+            if (( _so = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol)) == -1)
+            {
+                continue;
+            }
+            else
+            {
+                saddr = *((struct sockaddr_storage*)rp->ai_addr);
+                break;
+            }
+        }
     }
-#if defined (WIN32) && !defined(__CYGWIN__)
-    const BOOL on = TRUE;
-#else
-    int on = 1;
-#endif
 
-#if defined (WIN32) && !defined(__CYGWIN__)
-    setsockopt( _so, SOL_SOCKET, SO_REUSEADDR, (const char *) &on, sizeof(int));
-#else
-    setsockopt( _so, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-#endif
-
-    saddr.sin_family = AF_INET;
-    saddr.sin_port   = htons( _port );
-    if( _address == 0 )
+    if( rp == NULL )
     {
+        struct sockaddr_in* tmpsaddr = (struct sockaddr_in*)&saddr;
+        tmpsaddr->sin_family = AF_INET;
+        if( (_so = socket( AF_INET, SOCK_DGRAM, 0 )) < 0 )
+        {
+            perror( "Socket" );
+            return false;
+        }
 #if defined (WIN32) && !defined(__CYGWIN__)
+        BOOL on = TRUE;
         setsockopt( _so, SOL_SOCKET, SO_BROADCAST, (const char *) &on, sizeof(int));
 #else
+        int on = 1;
         setsockopt( _so, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
 #endif
 
@@ -454,7 +453,7 @@ bool Broadcaster::init( void )
         strcpy( ifr.ifr_name, "ef0" );
 #endif
 #if defined (WIN32) // get the server address
-        saddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+        tmpsaddr->sin_addr.s_addr = htonl(INADDR_BROADCAST);
     }
 #else
         if( (ioctl( _so, SIOCGIFBRDADDR, &ifr)) < 0 )
@@ -462,33 +461,54 @@ bool Broadcaster::init( void )
             perror( "Broadcaster::init() Cannot get Broadcast Address" );
             return false;
         }
-            saddr.sin_addr.s_addr = (((sockaddr_in *)&ifr.ifr_broadaddr)->sin_addr.s_addr);
-        }
-        else
-        {
-            saddr.sin_addr.s_addr = _address;
-        }
-#endif
-#define _VERBOSE 1
-#ifdef _VERBOSE
-    unsigned char *ptr = (unsigned char *)&saddr.sin_addr.s_addr;
-    printf( "Broadcast address : %u.%u.%u.%u\n", ptr[0], ptr[1], ptr[2], ptr[3] );
+        tmpsaddr->sin_addr.s_addr = (((sockaddr_in *)&ifr.ifr_broadaddr)->sin_addr.s_addr);
+    }
 #endif
 
+#if defined (WIN32) && !defined(__CYGWIN__)
+    const BOOL on = TRUE;
+    setsockopt( _so, SOL_SOCKET, SO_REUSEADDR, (const char *) &on, sizeof(int));
+#else
+    int on = 1;
+    setsockopt( _so, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+#endif
+
+    struct sockaddr* sa;
+    switch (saddr.ss_family)
+    {
+        case AF_INET:
+            ((sockaddr_in*)&saddr)->sin_port   = htons( _port );
+            sa = (struct sockaddr*)&(((struct sockaddr_in*)&saddr)->sin_addr);
+            break;
+        case AF_INET6:
+            ((sockaddr_in6*)&saddr)->sin6_port   = htons( _port );
+            sa = (struct sockaddr*)&(((struct sockaddr_in6*)&saddr)->sin6_addr);
+            break;
+    }
+    char ip[INET6_ADDRSTRLEN];
+    inet_ntop(saddr.ss_family, sa, ip, sizeof( ip ));
+    printf( "Broadcast address : %s\n", ip );
     _initialized = true;
     return _initialized;
 }
 
 void Broadcaster::setHost( const char *hostname )
 {
-    struct hostent *h;
-    if( (h = gethostbyname( hostname )) == 0L )
+#if !defined (WIN32) || defined(__CYGWIN__)
+    struct addrinfo hints;
+#else
+    ADDRINFO hints;
+#endif
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;    // Allow IPv4 or IPv6
+    hints.ai_socktype = SOCK_DGRAM; // Datagram socket
+    hints.ai_flags = AI_PASSIVE;    // For wildcard IP address
+    if( getaddrinfo( hostname, NULL, &hints, &_address) != 0 )
     {
         fprintf( stderr, "Broadcaster::setHost() - Cannot resolv an address for \"%s\".\n", hostname );
-        _address = 0;
+        freeaddrinfo( _address );
+        _address = NULL;
     }
-    else
-        _address = *(( unsigned long  *)h->h_addr);
 }
 
 void Broadcaster::setPort( const short port )
@@ -512,14 +532,5 @@ void Broadcaster::sync( void )
         return;
     }
 
-#if defined (WIN32) && !defined(__CYGWIN__)
-    unsigned int size = sizeof( SOCKADDR_IN );
-    sendto( _so, (const char *)_buffer, _buffer_size, 0, (struct sockaddr *)&saddr, size );
-    // int err = WSAGetLastError ();
-    // int *dum = (int*) _buffer;
-#else
-    unsigned int size = sizeof( struct sockaddr_in );
-    sendto( _so, (const void *)_buffer, _buffer_size, 0, (struct sockaddr *)&saddr, size );
-#endif
-
+    sendto( _so, (const char *)_buffer, _buffer_size, 0, (struct sockaddr *)&saddr, sizeof( saddr ));
 }
